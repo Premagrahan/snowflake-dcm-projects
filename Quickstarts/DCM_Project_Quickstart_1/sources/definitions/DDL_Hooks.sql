@@ -8,10 +8,10 @@ as [
         ENABLED = true;
 
     -- requires role privilege to create integration on account
-    create NOTIFICATION INTEGRATION if not exists DCM_EMAIL_NOTIFICATIONS{{env_suffix}}
-        TYPE = EMAIL
-        ENABLED = true
-        ALLOWED_RECIPIENTS = ('jan.sommerfeld@snowflake.com');
+    -- create NOTIFICATION INTEGRATION if not exists DCM_EMAIL_NOTIFICATIONS{{env_suffix}}
+    --     TYPE = EMAIL
+    --     ENABLED = true
+    --     ALLOWED_RECIPIENTS = ('YOUR_VERIFIED_EMAIL_HERE');
 
     -- requires role privilege to create share on account
     create SHARE if not exists DCM_DEMO_SHARE{{env_suffix}}
