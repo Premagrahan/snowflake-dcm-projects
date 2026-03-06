@@ -1,8 +1,3 @@
-# This GitHub Action workflow runs when changes are merged to main
-# it is meant for CI/CD demo and testing purposes
-# 1. It deploys and tests changes in the STAGE environment.
-# 2. If staging is successful, it proceeds to deploy and test in the PROD environment.
-
 name: ❄️ DCM - Deploy to STAGE & PROD
 
 on:
@@ -11,52 +6,42 @@ on:
     paths:
       - 'Quickstarts/**'
       
-  # Allows to run this workflow manually from the Actions tab
   workflow_dispatch:
   
 env:
-  # in your github repo settings add these variables and secrets to each environment
-  SNOWFLAKE_ACCOUNT: ${{ vars.SNOWFLAKE_ACCOUNT }}
-  SNOWFLAKE_PASSWORD: ${{ secrets.DEPLOYER_PAT }}
-  SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }} 
   DCM_PROJECT_PATH: ${{ vars.DCM_PROJECT_PATH }}
+  SNOWFLAKE_PASSWORD: ${{ secrets.DEPLOYER_PAT }}
+  SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
   
 jobs:
   PLAN_STAGE:
     runs-on: ubuntu-latest
-    environment: STAGE
-    outputs:
-      STAGE_DCM_PROJECT_NAME: ${{ steps.read_manifest.outputs.stage_dcm_project_name }}
+    environment: DCM_STAGE
     steps:
     - name: Clone Repo
-      uses: actions/checkout@v4
-      
-    - name: Setup yaml parser
-      uses: mikefarah/yq@v4
-      
-    - name: Get Project Object names from manifest
+      uses: actions/checkout@v4      
+    - name: Read manifest target DCM_STAGE
       id: read_manifest
       run: |
         MANIFEST_PATH="${{ env.DCM_PROJECT_PATH }}manifest.yml"
-        PROJECT_NAME=$(yq eval ".configurations.STAGE.project_name" "$MANIFEST_PATH"| sed 's/"//g' | sed "s/'//g")
-        echo "stage_dcm_project_name=$PROJECT_NAME" >> "$GITHUB_OUTPUT"
-        echo "DCM_PROJECT_NAME=$PROJECT_NAME" >> "$GITHUB_ENV"
+        DCM_PROJECT_NAME=$(yq eval '.targets.DCM_STAGE.project_name' "$MANIFEST_PATH" | sed 's/"//g' | sed "s/'//g")
+        echo "stage_dcm_project_name=$DCM_PROJECT_NAME" >> "$GITHUB_OUTPUT"
+        echo "SNOWFLAKE_ACCOUNT=$(yq eval '.targets.DCM_STAGE.account_identifier' "$MANIFEST_PATH" | sed 's/"//g' | sed "s/'//g")" >> $GITHUB_ENV
+        echo "SNOWFLAKE_ROLE=$(yq eval '.targets.DCM_STAGE.project_owner' "$MANIFEST_PATH" | sed 's/"//g' | sed "s/'//g")" >> $GITHUB_ENV
                 
     - name: Setup SnowCLI
-      uses: snowflakedb/snowflake-cli-action@v2.0
-      with:
-        custom-github-ref: dcm-pipeline-commands
+      run: pip install git+https://github.com/snowflakedb/snowflake-cli.git
       
     - name: Execute PLAN against STAGE and summarize output
       id: stage_plan
       run: |        
         cd ./$DCM_PROJECT_PATH
-        snow dcm create "$DCM_PROJECT_NAME" --if-not-exists -x
+        snow dcm create --target DCM_STAGE --if-not-exists -x
         
-        if snow dcm plan "$DCM_PROJECT_NAME" --configuration STAGE --output-path plan -x; then        
+        if snow dcm plan --target DCM_STAGE -x; then        
           echo "### ✅ DCM Plan to STAGE successful" >> $GITHUB_STEP_SUMMARY
           
-          PLAN_METADATA_FILE="plan/plan_metadata.json"
+          PLAN_METADATA_FILE="out/plan_output/plan_metadata.json"
           for OP_TYPE in CREATE ALTER DROP; do
             OP_COUNT=$(jq --arg OP_TYPE "$OP_TYPE" '.ddlChangeLog.operations[] | select(.operationType == $OP_TYPE)' "$PLAN_METADATA_FILE" | jq -s 'length')
             if [ "$OP_COUNT" -gt 0 ]; then
@@ -76,7 +61,7 @@ jobs:
           {
             echo "### ❌ DCM Plan to STAGE failed"
             echo "\`\`\`"
-            jq -r '.error' plan/plan_metadata.json
+            jq -r '.error' out/plan_output/plan_metadata.json
             echo "\`\`\`"
           } >> $GITHUB_STEP_SUMMARY
           exit 1
@@ -87,24 +72,22 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: stage-plan-output
-        path: ${{ env.DCM_PROJECT_PATH }}plan/plan_metadata.json        
+        path: ${{ env.DCM_PROJECT_PATH }}out/plan_output/plan_metadata.json        
 
   DATA_DROP_DETECTION_STAGE:
     needs: PLAN_STAGE
     runs-on: ubuntu-latest
-    environment: STAGE
-    env:
-      DCM_PROJECT_NAME: ${{ needs.PLAN_STAGE.outputs.STAGE_DCM_PROJECT_NAME }}
+    environment: DCM_STAGE
     steps:
     - name: Download plan artifact
       uses: actions/download-artifact@v4
       with:
         name: stage-plan-output
-        path: ${{ env.DCM_PROJECT_PATH }}plan/
+        path: ${{ env.DCM_PROJECT_PATH }}out/plan_output/
         
     - name: Verify plan file exists
       run: |
-        PLAN_FILE="${{ env.DCM_PROJECT_PATH }}plan/plan_metadata.json"
+        PLAN_FILE="${{ env.DCM_PROJECT_PATH }}out/plan_output/plan_metadata.json"
         if [ ! -f "$PLAN_FILE" ]; then
           echo "### ⚠️ Plan output file not found!" >> $GITHUB_STEP_SUMMARY
           exit 1
@@ -112,14 +95,14 @@ jobs:
         
     - name: Check for Destructive Commands
       run: |
-        STAGE_PLAN_OUTPUT=${{ env.DCM_PROJECT_PATH }}plan/plan_metadata.json
+        STAGE_PLAN_OUTPUT=${{ env.DCM_PROJECT_PATH }}out/plan_output/plan_metadata.json
         DESTRUCTIVE_COMMANDS=$(jq -c '[.ddlChangeLog.operations[] | select(.operationType == "DROP" and (.objectDomain | IN("DATABASE", "SCHEMA", "TABLE", "STAGE")))]' "$STAGE_PLAN_OUTPUT")
         TOTAL_DROPS=$(echo "$DESTRUCTIVE_COMMANDS" | jq 'length')
         if [[ $TOTAL_DROPS -gt 0 ]]; then
           DATABASE_DROPS=$(echo "$DESTRUCTIVE_COMMANDS" | jq '[.[] | select(.objectDomain == "DATABASE")] | length')
           SCHEMA_DROPS=$(echo "$DESTRUCTIVE_COMMANDS" | jq '[.[] | select(.objectDomain == "SCHEMA")] | length')
           TABLE_DROPS=$(echo "$DESTRUCTIVE_COMMANDS" | jq '[.[] | select(.objectDomain == "TABLE")] | length')
-          STAGE_DROPS=$(echo "$DESTRUCTIVE_COMMANDS" | jq '[.[] | select(. objectDomain == "STAGE")] | length')
+          STAGE_DROPS=$(echo "$DESTRUCTIVE_COMMANDS" | jq '[.[] | select(.objectDomain == "STAGE")] | length')
          
           {
             echo "### ⚠️ Destructive Commands Detected"
@@ -132,31 +115,31 @@ jobs:
           
           exit 1
         else
-          echo " ✅ No DROP DATABASE | SCHEMA | TABLE | STAGE commands found for $DCM_PROJECT_NAME" >> $GITHUB_STEP_SUMMARY
+          echo "✅ No DROP DATABASE | SCHEMA | TABLE | STAGE commands found" >> $GITHUB_STEP_SUMMARY
         fi
 
 
   DEPLOY_STAGE:
     needs: [PLAN_STAGE, DATA_DROP_DETECTION_STAGE]
     runs-on: ubuntu-latest
-    environment: STAGE
-    env:
-      DCM_PROJECT_NAME: ${{ needs.PLAN_STAGE.outputs.STAGE_DCM_PROJECT_NAME }}
+    environment: DCM_STAGE
     steps:
     - name: Clone Repo
       uses: actions/checkout@v4
+    - name: Read manifest target DCM_STAGE
+      run: |
+        MANIFEST_PATH="${{ env.DCM_PROJECT_PATH }}manifest.yml"
+        echo "SNOWFLAKE_ACCOUNT=$(yq eval '.targets.DCM_STAGE.account_identifier' "$MANIFEST_PATH" | sed 's/"//g' | sed "s/'//g")" >> $GITHUB_ENV
+        echo "SNOWFLAKE_ROLE=$(yq eval '.targets.DCM_STAGE.project_owner' "$MANIFEST_PATH" | sed 's/"//g' | sed "s/'//g")" >> $GITHUB_ENV
         
     - name: Setup SnowCLI
-      uses: snowflakedb/snowflake-cli-action@v2.0
-      with:
-        custom-github-ref: dcm-pipeline-commands
+      run: pip install git+https://github.com/snowflakedb/snowflake-cli.git
       
     - name: Execute DEPLOY with STAGE config
       run: |        
         cd ./$DCM_PROJECT_PATH
         
-        # Capture the output of the deploy command
-        deploy_output=$(snow dcm deploy "$DCM_PROJECT_NAME" --configuration STAGE -x 2>&1)
+        deploy_output=$(snow dcm deploy --target DCM_STAGE -x 2>&1)
         EXIT_CODE=$?
         
         if [ $EXIT_CODE -eq 0 ]; then
@@ -175,15 +158,18 @@ jobs:
   POST_SCRIPTS_STAGE:
     needs: DEPLOY_STAGE
     runs-on: ubuntu-latest
-    environment: STAGE
+    environment: DCM_STAGE
     steps:
-    - name: Setup SnowCLI
-      uses: snowflakedb/snowflake-cli-action@v2.0
-      with:
-        custom-github-ref: dcm-pipeline-commands
-        
     - name: Clone Repo
       uses: actions/checkout@v4
+    - name: Read manifest target DCM_STAGE
+      run: |
+        MANIFEST_PATH="${{ env.DCM_PROJECT_PATH }}manifest.yml"
+        echo "SNOWFLAKE_ACCOUNT=$(yq eval '.targets.DCM_STAGE.account_identifier' "$MANIFEST_PATH" | sed 's/"//g' | sed "s/'//g")" >> $GITHUB_ENV
+        echo "SNOWFLAKE_ROLE=$(yq eval '.targets.DCM_STAGE.project_owner' "$MANIFEST_PATH" | sed 's/"//g' | sed "s/'//g")" >> $GITHUB_ENV
+
+    - name: Setup SnowCLI
+      run: pip install git+https://github.com/snowflakedb/snowflake-cli.git
     
     - name: Execute any post scripts
       run: |
@@ -199,25 +185,25 @@ jobs:
         
 
   REFRESH_DYNAMIC_TABLES_STAGE:
-    needs: [PLAN_STAGE, POST_SCRIPTS_STAGE]
+    needs: POST_SCRIPTS_STAGE
     runs-on: ubuntu-latest
-    environment: STAGE
-    env:
-      DCM_PROJECT_NAME: ${{ needs.PLAN_STAGE.outputs.STAGE_DCM_PROJECT_NAME }}
+    environment: DCM_STAGE
     steps:
     - name: Clone Repo
       uses: actions/checkout@v4
+    - name: Read manifest target DCM_STAGE
+      run: |
+        MANIFEST_PATH="${{ env.DCM_PROJECT_PATH }}manifest.yml"
+        echo "SNOWFLAKE_ACCOUNT=$(yq eval '.targets.DCM_STAGE.account_identifier' "$MANIFEST_PATH" | sed 's/"//g' | sed "s/'//g")" >> $GITHUB_ENV
+        echo "SNOWFLAKE_ROLE=$(yq eval '.targets.DCM_STAGE.project_owner' "$MANIFEST_PATH" | sed 's/"//g' | sed "s/'//g")" >> $GITHUB_ENV
       
-    - name: install cli from dev branch
-      uses: snowflakedb/snowflake-cli-action@v2.0
-      with:
-        custom-github-ref: dcm-pipeline-commands
+    - name: Setup SnowCLI
+      run: pip install git+https://github.com/snowflakedb/snowflake-cli.git
         
     - name: Refresh all Dynamic Tables
       run: |
-        # prevent job cancelation when error to first catch and show error message
         set +e
-        REFRESH_OUTPUT=$(snow dcm refresh $DCM_PROJECT_NAME -x 2>&1)
+        REFRESH_OUTPUT=$(snow dcm refresh --target DCM_STAGE -x 2>&1)
         EXIT_CODE=$?
         set -e
 
@@ -227,7 +213,6 @@ jobs:
           {
             echo "### ✅ Dynamic Tables Refresh Successful"
             echo "\`\`\`"
-            # echo $REFRESH_OUTPUT
             snow cortex complete "How many dynamic tables were refreshed in total? Use return-format: X of Y Dynamic Tables refreshed with new data. Here is the original ouput message:${REFRESH_OUTPUT}" -x
             echo "\`\`\`"
           } >> $GITHUB_STEP_SUMMARY
@@ -239,31 +224,30 @@ jobs:
             echo "\`\`\`" 
           } >> $GITHUB_STEP_SUMMARY
 
-          # now thow error to stop workflow
           exit $EXIT_CODE
         fi       
         
   TEST_EXPECTATIONS_STAGE:
-    needs: [PLAN_STAGE, REFRESH_DYNAMIC_TABLES_STAGE]
+    needs: REFRESH_DYNAMIC_TABLES_STAGE
     runs-on: ubuntu-latest
-    environment: STAGE
-    env:
-      DCM_PROJECT_NAME: ${{ needs.PLAN_STAGE.outputs.STAGE_DCM_PROJECT_NAME }}
+    environment: DCM_STAGE
     steps:
     - name: Clone Repo
       uses: actions/checkout@v4
+    - name: Read manifest target DCM_STAGE
+      run: |
+        MANIFEST_PATH="${{ env.DCM_PROJECT_PATH }}manifest.yml"
+        echo "SNOWFLAKE_ACCOUNT=$(yq eval '.targets.DCM_STAGE.account_identifier' "$MANIFEST_PATH" | sed 's/"//g' | sed "s/'//g")" >> $GITHUB_ENV
+        echo "SNOWFLAKE_ROLE=$(yq eval '.targets.DCM_STAGE.project_owner' "$MANIFEST_PATH" | sed 's/"//g' | sed "s/'//g")" >> $GITHUB_ENV
       
-    - name: install cli from dev branch
-      uses: snowflakedb/snowflake-cli-action@v2.0
-      with:
-        custom-github-ref: dcm-pipeline-commands     
+    - name: Setup SnowCLI
+      run: pip install git+https://github.com/snowflakedb/snowflake-cli.git
         
     - name: Test Data Quality Expectations
       id: test_stage_expectations
       run: |        
-        # prevent job cancelation when error to first catch and show error message
         set +e
-        TEST_OUTPUT=$(snow dcm test $DCM_PROJECT_NAME -x 2>&1)
+        TEST_OUTPUT=$(snow dcm test --target DCM_STAGE -x 2>&1)
         EXIT_CODE=$?
         set -e
 
@@ -271,7 +255,7 @@ jobs:
           {
             echo "### ✅ Data Quality Test Passed"
             echo "\`\`\`"
-            echo "All expectations met for project ${DCM_PROJECT_NAME}."
+            echo "All expectations met."
           } >> $GITHUB_STEP_SUMMARY
         else
           {
@@ -281,7 +265,6 @@ jobs:
             echo "\`\`\`"
           } >> $GITHUB_STEP_SUMMARY
                     
-          # now thow error to stop workflow
           exit $EXIT_CODE
         fi
 
@@ -292,39 +275,32 @@ jobs:
   PLAN_PROD:
     needs: TEST_EXPECTATIONS_STAGE
     runs-on: ubuntu-latest
-    environment: PROD
-    outputs:
-      PROD_DCM_PROJECT_NAME: ${{ steps.read_manifest.outputs.prod_dcm_project_name }}
+    environment: DCM_PROD_US
     steps:
     - name: Clone Repo
-      uses: actions/checkout@v4
-      
-    - name: Setup yaml parser
-      uses: mikefarah/yq@v4
-        
-    - name: Read PROD project name from manifest
+      uses: actions/checkout@v4        
+    - name: Read manifest target DCM_PROD_US
       id: read_manifest
       run: |
         MANIFEST_PATH="${{ env.DCM_PROJECT_PATH }}manifest.yml"
-        PROJECT_NAME=$(yq eval ".configurations.PROD.project_name" "$MANIFEST_PATH"| sed 's/"//g' | sed "s/'//g")
-        echo "prod_dcm_project_name=$PROJECT_NAME" >> "$GITHUB_OUTPUT"
-        echo "DCM_PROJECT_NAME=$PROJECT_NAME" >> "$GITHUB_ENV"
+        DCM_PROJECT_NAME=$(yq eval '.targets.DCM_PROD_US.project_name' "$MANIFEST_PATH" | sed 's/"//g' | sed "s/'//g")
+        echo "prod_dcm_project_name=$DCM_PROJECT_NAME" >> "$GITHUB_OUTPUT"
+        echo "SNOWFLAKE_ACCOUNT=$(yq eval '.targets.DCM_PROD_US.account_identifier' "$MANIFEST_PATH" | sed 's/"//g' | sed "s/'//g")" >> $GITHUB_ENV
+        echo "SNOWFLAKE_ROLE=$(yq eval '.targets.DCM_PROD_US.project_owner' "$MANIFEST_PATH" | sed 's/"//g' | sed "s/'//g")" >> $GITHUB_ENV
         
     - name: Setup SnowCLI
-      uses: snowflakedb/snowflake-cli-action@v2.0
-      with:
-        custom-github-ref: dcm-pipeline-commands
+      run: pip install git+https://github.com/snowflakedb/snowflake-cli.git
         
     - name: Execute PLAN against PROD and summarize output
       id: prod_plan
       run: |        
         cd ./$DCM_PROJECT_PATH
-        snow dcm create "$DCM_PROJECT_NAME" --if-not-exists -x
+        snow dcm create --target DCM_PROD_US --if-not-exists -x
         
-        if snow dcm plan "$DCM_PROJECT_NAME" --configuration PROD --output-path plan -x; then        
+        if snow dcm plan --target DCM_PROD_US -x; then        
           echo "### ✅ DCM Plan to PROD successful" >> $GITHUB_STEP_SUMMARY
           
-          PLAN_METADATA_FILE="plan/plan_metadata.json"
+          PLAN_METADATA_FILE="out/plan_output/plan_metadata.json"
           for OP_TYPE in CREATE ALTER DROP; do
             OP_COUNT=$(jq --arg OP_TYPE "$OP_TYPE" '.ddlChangeLog.operations[] | select(.operationType == $OP_TYPE)' "$PLAN_METADATA_FILE" | jq -s 'length')
             if [ "$OP_COUNT" -gt 0 ]; then
@@ -344,7 +320,7 @@ jobs:
           {
             echo "### ❌ DCM Plan to PROD failed"
             echo "\`\`\`"
-            jq -r '.error' plan/plan_metadata.json
+            jq -r '.error' out/plan_output/plan_metadata.json
             echo "\`\`\`" 
           } >> $GITHUB_STEP_SUMMARY
           exit 1
@@ -355,25 +331,23 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: prod-plan-output
-        path: ${{ env.DCM_PROJECT_PATH }}plan/plan_metadata.json
+        path: ${{ env.DCM_PROJECT_PATH }}out/plan_output/plan_metadata.json
         
 
   DATA_DROP_DETECTION_PROD:
     needs: PLAN_PROD
     runs-on: ubuntu-latest
-    environment: PROD
-    env:
-      DCM_PROJECT_NAME: ${{ needs.PLAN_PROD.outputs.PROD_DCM_PROJECT_NAME }}
+    environment: DCM_PROD_US
     steps:
     - name: Download plan artifact
       uses: actions/download-artifact@v4
       with:
         name: prod-plan-output
-        path: ${{ env.DCM_PROJECT_PATH }}plan/
+        path: ${{ env.DCM_PROJECT_PATH }}out/plan_output/
         
     - name: Verify plan file exists
       run: |
-        PLAN_FILE="${{ env.DCM_PROJECT_PATH }}plan/plan_metadata.json"
+        PLAN_FILE="${{ env.DCM_PROJECT_PATH }}out/plan_output/plan_metadata.json"
         if [ ! -f "$PLAN_FILE" ]; then
           echo "### ⚠️ Plan output file not found!" >> $GITHUB_STEP_SUMMARY
           exit 1
@@ -381,14 +355,14 @@ jobs:
         
     - name: Check for Destructive Commands
       run: |
-        PROD_PLAN_OUTPUT=${{ env.DCM_PROJECT_PATH }}plan/plan_metadata.json
+        PROD_PLAN_OUTPUT=${{ env.DCM_PROJECT_PATH }}out/plan_output/plan_metadata.json
         DESTRUCTIVE_COMMANDS=$(jq -c '[.ddlChangeLog.operations[] | select(.operationType == "DROP" and (.objectDomain | IN("DATABASE", "SCHEMA", "TABLE", "STAGE")))]' "$PROD_PLAN_OUTPUT")
         TOTAL_DROPS=$(echo "$DESTRUCTIVE_COMMANDS" | jq 'length')
         if [[ $TOTAL_DROPS -gt 0 ]]; then
           DATABASE_DROPS=$(echo "$DESTRUCTIVE_COMMANDS" | jq '[.[] | select(.objectDomain == "DATABASE")] | length')
           SCHEMA_DROPS=$(echo "$DESTRUCTIVE_COMMANDS" | jq '[.[] | select(.objectDomain == "SCHEMA")] | length')
           TABLE_DROPS=$(echo "$DESTRUCTIVE_COMMANDS" | jq '[.[] | select(.objectDomain == "TABLE")] | length')
-          STAGE_DROPS=$(echo "$DESTRUCTIVE_COMMANDS" | jq '[.[] | select(. objectDomain == "STAGE")] | length')
+          STAGE_DROPS=$(echo "$DESTRUCTIVE_COMMANDS" | jq '[.[] | select(.objectDomain == "STAGE")] | length')
           
           {
             echo "### ⚠️ Destructive Commands Detected"
@@ -401,31 +375,31 @@ jobs:
           
           exit 1
         else
-          echo "### ✅ No DROP DATABASE | SCHEMA | TABLE | STAGE commands found for $DCM_PROJECT_NAME" >> $GITHUB_STEP_SUMMARY
+          echo "### ✅ No DROP DATABASE | SCHEMA | TABLE | STAGE commands found" >> $GITHUB_STEP_SUMMARY
         fi
 
 
   DEPLOY_PROD:
     needs: [PLAN_PROD, DATA_DROP_DETECTION_PROD]
     runs-on: ubuntu-latest
-    environment: PROD
-    env:
-      DCM_PROJECT_NAME: ${{ needs.PLAN_PROD.outputs.PROD_DCM_PROJECT_NAME }}
+    environment: DCM_PROD_US
     steps:
     - name: Clone Repo
       uses: actions/checkout@v4
+    - name: Read manifest target DCM_PROD_US
+      run: |
+        MANIFEST_PATH="${{ env.DCM_PROJECT_PATH }}manifest.yml"
+        echo "SNOWFLAKE_ACCOUNT=$(yq eval '.targets.DCM_PROD_US.account_identifier' "$MANIFEST_PATH" | sed 's/"//g' | sed "s/'//g")" >> $GITHUB_ENV
+        echo "SNOWFLAKE_ROLE=$(yq eval '.targets.DCM_PROD_US.project_owner' "$MANIFEST_PATH" | sed 's/"//g' | sed "s/'//g")" >> $GITHUB_ENV
         
     - name: Setup SnowCLI
-      uses: snowflakedb/snowflake-cli-action@v2.0
-      with:
-        custom-github-ref: dcm-pipeline-commands
+      run: pip install git+https://github.com/snowflakedb/snowflake-cli.git
       
     - name: Execute DEPLOY with PROD config
       run: |        
         cd ./$DCM_PROJECT_PATH
         
-        # Capture the output of the deploy command
-        deploy_output=$(snow dcm deploy "$DCM_PROJECT_NAME" --configuration PROD -x 2>&1)
+        deploy_output=$(snow dcm deploy --target DCM_PROD_US -x 2>&1)
         EXIT_CODE=$?
         
         if [ $EXIT_CODE -eq 0 ]; then
@@ -442,12 +416,18 @@ jobs:
   POST_SCRIPTS_PROD:
     needs: DEPLOY_PROD
     runs-on: ubuntu-latest
-    environment: PROD
+    environment: DCM_PROD_US
     steps:
+    - name: Clone Repo
+      uses: actions/checkout@v4
+    - name: Read manifest target DCM_PROD_US
+      run: |
+        MANIFEST_PATH="${{ env.DCM_PROJECT_PATH }}manifest.yml"
+        echo "SNOWFLAKE_ACCOUNT=$(yq eval '.targets.DCM_PROD_US.account_identifier' "$MANIFEST_PATH" | sed 's/"//g' | sed "s/'//g")" >> $GITHUB_ENV
+        echo "SNOWFLAKE_ROLE=$(yq eval '.targets.DCM_PROD_US.project_owner' "$MANIFEST_PATH" | sed 's/"//g' | sed "s/'//g")" >> $GITHUB_ENV
+
     - name: Setup SnowCLI
-      uses: snowflakedb/snowflake-cli-action@v2.0
-      with:
-        custom-github-ref: dcm-pipeline-commands
+      run: pip install git+https://github.com/snowflakedb/snowflake-cli.git
       
     - name: Clone Repo
       uses: actions/checkout@v4
@@ -466,25 +446,25 @@ jobs:
 
 
   REFRESH_DYNAMIC_TABLES_PROD:
-    needs: [PLAN_PROD, POST_SCRIPTS_PROD]
+    needs: POST_SCRIPTS_PROD
     runs-on: ubuntu-latest
-    environment: PROD
-    env:
-      DCM_PROJECT_NAME: ${{ needs.PLAN_PROD.outputs.PROD_DCM_PROJECT_NAME }}
+    environment: DCM_PROD_US
     steps:
     - name: Clone Repo
       uses: actions/checkout@v4
+    - name: Read manifest target DCM_PROD_US
+      run: |
+        MANIFEST_PATH="${{ env.DCM_PROJECT_PATH }}manifest.yml"
+        echo "SNOWFLAKE_ACCOUNT=$(yq eval '.targets.DCM_PROD_US.account_identifier' "$MANIFEST_PATH" | sed 's/"//g' | sed "s/'//g")" >> $GITHUB_ENV
+        echo "SNOWFLAKE_ROLE=$(yq eval '.targets.DCM_PROD_US.project_owner' "$MANIFEST_PATH" | sed 's/"//g' | sed "s/'//g")" >> $GITHUB_ENV
       
-    - name: install cli from dev branch
-      uses: snowflakedb/snowflake-cli-action@v2.0
-      with:
-        custom-github-ref: dcm-pipeline-commands
+    - name: Setup SnowCLI
+      run: pip install git+https://github.com/snowflakedb/snowflake-cli.git
         
     - name: Refresh all Dynamic Tables
       run: |
-        # prevent job cancelation when error to first catch and show error message
         set +e
-        REFRESH_OUTPUT=$(snow dcm refresh $DCM_PROJECT_NAME -x 2>&1)
+        REFRESH_OUTPUT=$(snow dcm refresh --target DCM_PROD_US -x 2>&1)
         EXIT_CODE=$?
         set -e
 
@@ -494,7 +474,6 @@ jobs:
           {
             echo "### ✅ Dynamic Tables Refresh Successful"
             echo "\`\`\`"
-            # echo $REFRESH_OUTPUT
             snow cortex complete "How many dynamic tables were refreshed in total? Use return-format: X of Y Dynamic Tables refreshed with new data. Here is the original ouput message:${REFRESH_OUTPUT}" -x
             echo "\`\`\`"
           } >> $GITHUB_STEP_SUMMARY
@@ -506,31 +485,30 @@ jobs:
             echo "\`\`\`" 
           } >> $GITHUB_STEP_SUMMARY
 
-          # now thow error to stop workflow
           exit $EXIT_CODE
         fi       
         
   TEST_EXPECTATIONS_PROD:
-    needs: [PLAN_PROD, REFRESH_DYNAMIC_TABLES_PROD]
+    needs: REFRESH_DYNAMIC_TABLES_PROD
     runs-on: ubuntu-latest
-    environment: PROD
-    env:
-      DCM_PROJECT_NAME: ${{ needs.PLAN_PROD.outputs.PROD_DCM_PROJECT_NAME }}
+    environment: DCM_PROD_US
     steps:
     - name: Clone Repo
       uses: actions/checkout@v4
+    - name: Read manifest target DCM_PROD_US
+      run: |
+        MANIFEST_PATH="${{ env.DCM_PROJECT_PATH }}manifest.yml"
+        echo "SNOWFLAKE_ACCOUNT=$(yq eval '.targets.DCM_PROD_US.account_identifier' "$MANIFEST_PATH" | sed 's/"//g' | sed "s/'//g")" >> $GITHUB_ENV
+        echo "SNOWFLAKE_ROLE=$(yq eval '.targets.DCM_PROD_US.project_owner' "$MANIFEST_PATH" | sed 's/"//g' | sed "s/'//g")" >> $GITHUB_ENV
       
-    - name: install cli from dev branch
-      uses: snowflakedb/snowflake-cli-action@v2.0
-      with:
-        custom-github-ref: dcm-pipeline-commands     
+    - name: Setup SnowCLI
+      run: pip install git+https://github.com/snowflakedb/snowflake-cli.git
         
     - name: Test Data Quality Expectations
-      id: test_stage_expectations
+      id: test_prod_expectations
       run: |        
-        # prevent job cancelation when error to first catch and show error message
         set +e
-        TEST_OUTPUT=$(snow dcm test $DCM_PROJECT_NAME -x 2>&1)
+        TEST_OUTPUT=$(snow dcm test --target DCM_PROD_US -x 2>&1)
         EXIT_CODE=$?
         set -e
 
@@ -538,7 +516,7 @@ jobs:
           {
             echo "### ✅ Data Quality Test Passed"
             echo "\`\`\`"
-            echo "All expectations met for project ${DCM_PROJECT_NAME}."
+            echo "All expectations met."
           } >> $GITHUB_STEP_SUMMARY
         else
           {
@@ -548,7 +526,6 @@ jobs:
             echo "\`\`\`"
           } >> $GITHUB_STEP_SUMMARY
                     
-          # now thow error to stop workflow
           exit $EXIT_CODE
         fi
 
@@ -567,14 +544,12 @@ jobs:
       - name: Post Statuses to PR
         uses: actions/github-script@v7
         env:
-          # Stage Job Results
           PLAN_STAGE_RESULT: ${{ needs.PLAN_STAGE.result }}
           DATA_DROP_DETECTION_STAGE_RESULT: ${{ needs.DATA_DROP_DETECTION_STAGE.result }}
           DEPLOY_STAGE_RESULT: ${{ needs.DEPLOY_STAGE.result }}
           POST_SCRIPTS_STAGE_RESULT: ${{ needs.POST_SCRIPTS_STAGE.result }}
           REFRESH_DYNAMIC_TABLES_STAGE_RESULT: ${{ needs.REFRESH_DYNAMIC_TABLES_STAGE.result }}
           TEST_EXPECTATIONS_STAGE_RESULT: ${{ needs.TEST_EXPECTATIONS_STAGE.result }}
-          # Prod Job Results
           PLAN_PROD_RESULT: ${{ needs.PLAN_PROD.result }}
           DATA_DROP_DETECTION_PROD_RESULT: ${{ needs.DATA_DROP_DETECTION_PROD.result }}
           DEPLOY_PROD_RESULT: ${{ needs.DEPLOY_PROD.result }}
@@ -629,7 +604,7 @@ jobs:
               summary += `| ${job} | ${getEmoji(result)} ${result} |\n`;
             }
             for (const [job, result] of Object.entries(prod_jobs)) {
-              if (result) { // Only show prod jobs if they have a result
+              if (result) {
                 summary += `| ${job} | ${getEmoji(result)} ${result} |\n`;
               }
             }

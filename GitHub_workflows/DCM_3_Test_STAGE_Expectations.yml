@@ -3,30 +3,32 @@ name: ❄️ DCM - Test Expectations on Stage
 on:     
   workflow_dispatch:
   
+env:
+  DCM_PROJECT_PATH: ${{ vars.DCM_PROJECT_PATH }}
+  SNOWFLAKE_PASSWORD: ${{ secrets.DEPLOYER_PAT }}
+  SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
+
 jobs:
   TEST_EXPECTATIONS_STAGE:
     runs-on: ubuntu-latest
-    environment: STAGE
-    env:
-      SNOWFLAKE_ACCOUNT: ${{ vars.SNOWFLAKE_ACCOUNT }}
-      SNOWFLAKE_PASSWORD: ${{ secrets.DEPLOYER_PAT }}
-      SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }} 
-      DCM_PROJECT_PATH: ${{ vars.DCM_PROJECT_PATH }}
-      DCM_PROJECT_NAME: 'DCM_DEMO.PROJECTS.DCM_PROJECT_STG'
+    environment: DCM_STAGE
     steps:
     - name: Clone Repo
       uses: actions/checkout@v4
+
+    - name: Read manifest target DCM_STAGE
+      run: |
+        MANIFEST_PATH="${{ env.DCM_PROJECT_PATH }}manifest.yml"
+        echo "SNOWFLAKE_ACCOUNT=$(yq eval '.targets.DCM_STAGE.account_identifier' "$MANIFEST_PATH" | sed 's/"//g' | sed "s/'//g")" >> $GITHUB_ENV
+        echo "SNOWFLAKE_ROLE=$(yq eval '.targets.DCM_STAGE.project_owner' "$MANIFEST_PATH" | sed 's/"//g' | sed "s/'//g")" >> $GITHUB_ENV
       
-    - name: install cli from dev branch
-      uses: snowflakedb/snowflake-cli-action@v2.0
-      with:
-        custom-github-ref: dcm-pipeline-commands
+    - name: Setup SnowCLI
+      run: pip install git+https://github.com/snowflakedb/snowflake-cli.git
     
     - name: Refresh all Dynamic Tables
       run: |
-        # prevent job cancelation when error to first catch and show error message
         set +e
-        REFRESH_OUTPUT=$(snow dcm refresh $DCM_PROJECT_NAME -x 2>&1)
+        REFRESH_OUTPUT=$(snow dcm refresh --target DCM_STAGE -x 2>&1)
         EXIT_CODE=$?
         set -e
 
@@ -36,7 +38,6 @@ jobs:
           {
             echo "### ✅ Dynamic Tables Refresh Successful"
             echo "\`\`\`"
-            # echo $REFRESH_OUTPUT
             snow cortex complete "How many dynamic tables were refreshed in total? Use return-format: X of Y DTs refreshed with new data. Here is the original ouput message:${REFRESH_OUTPUT}" -x
             echo "\`\`\`"
           } >> $GITHUB_STEP_SUMMARY
@@ -48,7 +49,6 @@ jobs:
             echo "\`\`\`" 
           } >> $GITHUB_STEP_SUMMARY
 
-          # now thow error to stop workflow
           exit $EXIT_CODE
         fi       
         
@@ -56,9 +56,8 @@ jobs:
     - name: Test Data Quality Expectations
       id: test_stage_expectations
       run: |        
-        # prevent job cancelation when error to first catch and show error message
         set +e
-        TEST_OUTPUT=$(snow dcm test $DCM_PROJECT_NAME -x 2>&1)
+        TEST_OUTPUT=$(snow dcm test --target DCM_STAGE -x 2>&1)
         EXIT_CODE=$?
         set -e
 
@@ -66,7 +65,7 @@ jobs:
           {
             echo "### ✅ Data Quality Test Passed"
             echo "\`\`\`"
-            echo "All expectations met for project ${DCM_PROJECT_NAME}."
+            echo "All expectations met."
           } >> $GITHUB_STEP_SUMMARY
         else
           {
@@ -76,6 +75,5 @@ jobs:
             echo "\`\`\`"
           } >> $GITHUB_STEP_SUMMARY
                     
-          # now thow error to stop workflow
           exit $EXIT_CODE
         fi

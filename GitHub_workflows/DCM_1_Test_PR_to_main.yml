@@ -1,62 +1,48 @@
-# PRIVATE PREVIEW
-# This GitHub Action workflow runs on pull requests to the main branch
-# it is meant for CI/CD demo and testing purposes
-
 name: ❄️ DCM - Test PR to main against STAGE and PROD
 
 on:
-  # Triggers the workflow on pull request events with changes in the Quickstarts folder
   pull_request:
     types: [opened, synchronize, reopened]
     branches: ["main"]     
     paths:
       - 'Quickstarts/**'      
     
-  # Allows to run this workflow manually from the Actions tab
   workflow_dispatch:
   
 env:
-  # in your github repo settings add these variables and secrets to each environment
-  SNOWFLAKE_ACCOUNT: ${{ vars.SNOWFLAKE_ACCOUNT }}
-  SNOWFLAKE_PASSWORD: ${{ secrets.DEPLOYER_PAT }}
-  SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }} 
   DCM_PROJECT_PATH: ${{ vars.DCM_PROJECT_PATH }}
+  SNOWFLAKE_PASSWORD: ${{ secrets.DEPLOYER_PAT }}
+  SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
   
 jobs:
   STAGE_PLAN:
     runs-on: ubuntu-latest
-    environment: STAGE
+    environment: DCM_STAGE
     steps:
     - name: Clone Repo
       uses: actions/checkout@v4
       
-    - name: Setup yaml parser
-      uses: mikefarah/yq@v4
-      
-    - name: Get Project Object names from manifest
+    - name: Read manifest target DCM_STAGE
       run: |
-        MANIFEST_PATH="${{ env.DCM_PROJECT_PATH }}manifest.yml"        
-        DCM_PROJECT_NAME=$(yq eval ".configurations.STAGE.project_name" "$MANIFEST_PATH" | sed 's/"//g' | sed "s/'//g")
-        echo "DCM_PROJECT_NAME=$DCM_PROJECT_NAME" >> $GITHUB_ENV
+        MANIFEST_PATH="${{ env.DCM_PROJECT_PATH }}manifest.yml"
+        echo "SNOWFLAKE_ACCOUNT=$(yq eval '.targets.DCM_STAGE.account_identifier' "$MANIFEST_PATH" | sed 's/"//g' | sed "s/'//g")" >> $GITHUB_ENV
+        echo "SNOWFLAKE_ROLE=$(yq eval '.targets.DCM_STAGE.project_owner' "$MANIFEST_PATH" | sed 's/"//g' | sed "s/'//g")" >> $GITHUB_ENV
                 
     - name: Setup SnowCLI
-      uses: snowflakedb/snowflake-cli-action@v2.0
-      with:
-        custom-github-ref: dcm-pipeline-commands
+      run: pip install git+https://github.com/snowflakedb/snowflake-cli.git
       
     - name: Execute PLAN against STAGE and summarize output
       id: stage_plan
       run: |        
         cd ./$DCM_PROJECT_PATH
-        snow dcm create "$DCM_PROJECT_NAME" --if-not-exists -x
+        snow dcm create --target DCM_STAGE --if-not-exists -x
 
-        # Create empty summary directory
         mkdir -p summary
         
-        if snow dcm plan "$DCM_PROJECT_NAME" --configuration STAGE --output-path plan -x; then        
+        if snow dcm plan --target DCM_STAGE -x; then        
           echo "### ✅ DCM Plan to STAGE successful" >> $GITHUB_STEP_SUMMARY
           
-          PLAN_METADATA_FILE="plan/plan_metadata.json"
+          PLAN_METADATA_FILE="out/plan_output/plan_metadata.json"
           for OP_TYPE in CREATE ALTER DROP; do
             OP_COUNT=$(jq --arg OP_TYPE "$OP_TYPE" '.ddlChangeLog.operations[] | select(.operationType == $OP_TYPE)' "$PLAN_METADATA_FILE" | jq -s 'length')
             if [ "$OP_COUNT" -gt 0 ]; then
@@ -72,16 +58,14 @@ jobs:
             fi
           done
           
-          # Copy the full summary to the artifact file
           cp $GITHUB_STEP_SUMMARY summary/stage-plan-summary.md
             
         else
           echo "### ❌ DCM Plan to STAGE failed" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          jq -r '.error' plan/plan_metadata.json >> $GITHUB_STEP_SUMMARY
+          jq -r '.error' out/plan_output/plan_metadata.json >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           
-          # Copy the full summary to the artifact file
           cp $GITHUB_STEP_SUMMARY summary/stage-plan-summary.md
           exit 1
         fi
@@ -91,7 +75,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: stage-plan-output
-        path: ${{ env.DCM_PROJECT_PATH }}plan/plan_metadata.json
+        path: ${{ env.DCM_PROJECT_PATH }}out/plan_output/plan_metadata.json
 
     - name: Upload STAGE PLAN Summary
       if: always()
@@ -103,38 +87,32 @@ jobs:
         
   PROD_PLAN:
     runs-on: ubuntu-latest
-    environment: PROD
+    environment: DCM_PROD_US
     steps:
     - name: Clone Repo
       uses: actions/checkout@v4
 
-    - name: Setup yaml parser
-      uses: mikefarah/yq@v4
-        
-    - name: Read DCM Project Name from manifest
+    - name: Read manifest target DCM_PROD_US
       run: |
         MANIFEST_PATH="${{ env.DCM_PROJECT_PATH }}manifest.yml"
-        DCM_PROJECT_NAME=$(yq eval ".configurations.PROD.project_name" "$MANIFEST_PATH" | sed 's/"//g' | sed "s/'//g")
-        echo "DCM_PROJECT_NAME=$DCM_PROJECT_NAME" >> $GITHUB_ENV
+        echo "SNOWFLAKE_ACCOUNT=$(yq eval '.targets.DCM_PROD_US.account_identifier' "$MANIFEST_PATH" | sed 's/"//g' | sed "s/'//g")" >> $GITHUB_ENV
+        echo "SNOWFLAKE_ROLE=$(yq eval '.targets.DCM_PROD_US.project_owner' "$MANIFEST_PATH" | sed 's/"//g' | sed "s/'//g")" >> $GITHUB_ENV
         
     - name: Setup SnowCLI
-      uses: snowflakedb/snowflake-cli-action@v2.0
-      with:
-        custom-github-ref: dcm-pipeline-commands
+      run: pip install git+https://github.com/snowflakedb/snowflake-cli.git
         
     - name: Execute PLAN against PROD and summarize output
       id: prod_plan
       run: |        
         cd ./$DCM_PROJECT_PATH
-        snow dcm create "$DCM_PROJECT_NAME" --if-not-exists -x
+        snow dcm create --target DCM_PROD_US --if-not-exists -x
 
-        # Create empty summary directory
         mkdir -p summary
         
-        if snow dcm plan "$DCM_PROJECT_NAME" --configuration PROD --output-path plan -x; then        
+        if snow dcm plan --target DCM_PROD_US -x; then        
           echo "### ✅ DCM Plan to PROD successful" >> $GITHUB_STEP_SUMMARY
           
-          PLAN_METADATA_FILE="plan/plan_metadata.json"
+          PLAN_METADATA_FILE="out/plan_output/plan_metadata.json"
           for OP_TYPE in CREATE ALTER DROP; do
             OP_COUNT=$(jq --arg OP_TYPE "$OP_TYPE" '(.ddlChangeLog.operations[] | select(.operationType == $OP_TYPE)) | length' "$PLAN_METADATA_FILE" | wc -l)
             if [ "$OP_COUNT" -gt 0 ]; then
@@ -150,16 +128,14 @@ jobs:
             fi
           done
           
-          # Copy the full summary to the artifact file
           cp $GITHUB_STEP_SUMMARY summary/prod-plan-summary.md
             
         else
           echo "### ❌ DCM Plan to PROD failed" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          jq -r '.error' plan/plan_metadata.json >> $GITHUB_STEP_SUMMARY
+          jq -r '.error' out/plan_output/plan_metadata.json >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           
-          # Copy the full summary to the artifact file
           cp $GITHUB_STEP_SUMMARY summary/prod-plan-summary.md
           exit 1
         fi
@@ -169,7 +145,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: prod-plan-output
-        path: ${{ env.DCM_PROJECT_PATH }}plan/plan_metadata.json
+        path: ${{ env.DCM_PROJECT_PATH }}out/plan_output/plan_metadata.json
 
     - name: Upload PROD PLAN Summary
       if: always()
@@ -212,7 +188,6 @@ jobs:
                 comment += `---\n`;
               } 
               catch (error) {
-                // If the file doesn't exist, it could be because the job was skipped or failed before creating the artifact.
                 comment += `Could not retrieve summary. [View logs for details](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})\n\n`;
               }
             }
