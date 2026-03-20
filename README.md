@@ -7,8 +7,7 @@ Breaking changes may occur at any time.
 Use at your own risk.
 
 
-DCM Projects is currently in Private Preview. 
-Customers interested in early access are invited to coordinate with their respective account teams to determine Snowflake account eligibility.
+DCM Projects is currently in Public Preview. 
 
 ---
 
@@ -30,7 +29,7 @@ How to use this demo content:
 ### Option B: in your local IDE ###
 (if you are already familiar with snowflake-CLI)
 
-1. install snowflake-cli with `pipx install git+https://github.com/snowflakedb/snowflake-cli.git --force`
+1. install or update snowflake-cli to ensure you have version 3.16 or higher
 2. connect to your Snowflake account and check with `snow connection test`
 3. clone this dcm-quickstart repository `git clone https://github.com/snowflake-labs/snowflake_dcm_projects`
 4. Open the Quickstarts/DCM_Project_Quickstart_1/setup_cli.md file to continue or run `snow dcm --help`
