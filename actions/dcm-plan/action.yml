@@ -28,7 +28,7 @@
 #           with:
 #             target: DCM_STAGE
 #             project-path: Quickstarts/DCM_Project_Quickstart_1/
-#             snowflake-user: ${{ github.actor }}
+#             snowflake-user: ${{ vars.SNOWFLAKE_USER }}
 #             comment-on-pr: "true"
 #
 #   When comment-on-pr is enabled, the calling job also needs:

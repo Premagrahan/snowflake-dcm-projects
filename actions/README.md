@@ -26,7 +26,7 @@ For complete, ready-to-use workflow examples that compose these actions, see the
 
 ## Authentication
 
-All actions authenticate to Snowflake using the [`snowflakedb/snowflake-cli-action@v2.0.1`](https://github.com/snowflakedb/snowflake-cli-action) with **OIDC** (OpenID Connect) enabled. Each action calls this internally — you do not need to add a separate authentication step in your workflow.
+All actions authenticate to Snowflake using the [`snowflakedb/snowflake-cli-action@v2.0`](https://github.com/snowflakedb/snowflake-cli-action) with **OIDC** (OpenID Connect) enabled. Each action calls this internally — you do not need to add a separate authentication step in your workflow.
 
 **OIDC is the recommended approach.** It uses GitHub's built-in identity tokens so no passwords or private keys need to be stored as secrets. To use OIDC:
 
@@ -34,8 +34,6 @@ All actions authenticate to Snowflake using the [`snowflakedb/snowflake-cli-acti
 2. Create a GitHub Environment for each DCM target (e.g. `DCM_STAGE`, `DCM_PROD_US`)
 3. Set the `SNOWFLAKE_USER` repository variable to the service user name
 4. Grant the workflow `id-token: write` permission
-
-<!-- TODO: Link to detailed OIDC setup guide -->
 
 **PAT and key-pair authentication** are also supported. If you cannot use OIDC, set the appropriate environment variables in your workflow before calling the actions:
 
