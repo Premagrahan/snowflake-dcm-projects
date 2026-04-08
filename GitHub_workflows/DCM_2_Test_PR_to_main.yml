@@ -27,7 +27,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: ./actions/dcm-plan
+      - uses: Snowflake-Labs/snowflake_dcm_projects/actions/dcm-plan@v1
         id: plan
         with:
           target: DCM_PROD_US
